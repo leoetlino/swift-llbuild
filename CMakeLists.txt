@@ -135,10 +135,10 @@ if (XCODE)
   set(CMAKE_XCODE_ATTRIBUTE_GCC_ENABLE_CPP_RTTI "NO")
 
   # Disable exceptions.
-  set(CMAKE_XCODE_ATTRIBUTE_GCC_ENABLE_CPP_EXCEPTIONS "NO") 
+  set(CMAKE_XCODE_ATTRIBUTE_GCC_ENABLE_CPP_EXCEPTIONS "NO")
 
   # Disable headermaps.
-  set(CMAKE_XCODE_ATTRIBUTE_USE_HEADERMAP "NO") 
+  set(CMAKE_XCODE_ATTRIBUTE_USE_HEADERMAP "NO")
 elseif(MSVC)
   add_compile_options(
     # Disable unknown pragma warnings (e.g. for #pragma mark).

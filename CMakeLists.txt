@@ -158,7 +158,6 @@ elseif(MSVC)
 else ()
   add_compile_options(
     # Enable additional Clang warnings.
-    "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>"
     "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"
     "$<$<COMPILE_LANGUAGE:CXX>:-Wbool-conversion>"
     "$<$<COMPILE_LANGUAGE:CXX>:-Wconstant-conversion>"

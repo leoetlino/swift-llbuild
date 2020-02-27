@@ -23,6 +23,7 @@
 
 #include "BuildEngineTrace.h"
 
+#include <absl/container/node_hash_map.h>
 #include <atomic>
 #include <algorithm>
 #include <cassert>
@@ -279,7 +280,7 @@ class BuildEngineImpl : public BuildDBDelegate {
   // move to an alternate allocation strategy if we switch to DenseMap style
   // table. This is probably a good idea in any case, because we would benefit
   // from pool allocating RuleInfo instances.
-  std::unordered_map<KeyID, RuleInfo> ruleInfos;
+  absl::node_hash_map<KeyID, RuleInfo> ruleInfos;
 
   /// Information tracked for executing tasks.
   //
@@ -328,7 +329,7 @@ class BuildEngineImpl : public BuildDBDelegate {
   /// The tracked information for executing tasks.
   ///
   /// Access to this must be protected via \see taskInfosMutex.
-  std::unordered_map<Task*, TaskInfo> taskInfos;
+  absl::node_hash_map<Task*, TaskInfo> taskInfos;
 
   /// The mutex that protects the task info map.
   std::mutex taskInfosMutex;

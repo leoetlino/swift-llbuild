@@ -20,6 +20,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <absl/container/flat_hash_map.h>
+
 #include <cassert>
 #include <cerrno>
 #include <cstring>
@@ -40,18 +42,11 @@ struct DBKeyID {
   DBKeyID() { ; }
   DBKeyID(const DBKeyID&) = default;
   explicit DBKeyID(uint64_t value) : value(value) { ; }
-};
 
-// Provide DenseMapInfo for DBKeyID.
-template<> struct ::llvm::DenseMapInfo<DBKeyID> {
-  static inline DBKeyID getEmptyKey() { return DBKeyID(~0ULL); }
-  static inline DBKeyID getTombstoneKey() { return DBKeyID(~0ULL - 1ULL); }
-  static unsigned getHashValue(const DBKeyID& Val) {
-    return (unsigned)(Val.value * 37ULL);
+  template <typename H> friend H AbslHashValue(H h, DBKeyID v) {
+    return H::combine(std::move(h), v.value);
   }
-  static bool isEqual(const DBKeyID& LHS, const DBKeyID& RHS) {
-    return LHS.value == RHS.value;
-  }
+  friend bool operator==(DBKeyID lhs, DBKeyID rhs) { return lhs.value == rhs.value; }
 };
 
 // Helper macro checking and returning error messages for failed SQLite calls
@@ -858,10 +853,10 @@ public:
   
 private:
   /// Local cache of database DBKeyID (values) to engine KeyIDs
-  llvm::DenseMap<DBKeyID, KeyID> engineKeyIDs;
+  absl::flat_hash_map<DBKeyID, KeyID> engineKeyIDs;
 
   /// Local cache of database engine KeyIDs to DBKeyIDs
-  llvm::DenseMap<KeyID, DBKeyID> dbKeyIDs;
+  absl::flat_hash_map<KeyID, DBKeyID> dbKeyIDs;
 
   /// Lookup or create a DBKeyID for a given engine KeyID
   ///

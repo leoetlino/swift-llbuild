@@ -8,6 +8,8 @@ add_llbuild_library(llbuildCore STATIC
 )
 
 target_link_libraries(llbuildCore PRIVATE
+  absl::flat_hash_map
+  absl::node_hash_map
   llbuildBasic
   llvmSupport
   SQLite::SQLite3)

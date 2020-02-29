@@ -15,13 +15,13 @@
 #include "llbuild/Basic/FileSystem.h"
 #include "llbuild/Basic/LLVM.h"
 #include "llbuild/BuildSystem/BuildDescription.h"
+#include "llbuild/BuildSystem/BuildFileFormat.h"
 #include "llbuild/BuildSystem/Command.h"
 #include "llbuild/BuildSystem/Tool.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/YAMLParser.h"
 
 using namespace llbuild;
 using namespace llbuild::buildsystem;
@@ -35,64 +35,6 @@ BuildFileDelegate::~BuildFileDelegate() {}
 #pragma mark - BuildFile implementation
 
 namespace {
-
-#ifndef NDEBUG
-static void dumpNode(llvm::yaml::Node* node, unsigned indent=0)
-    LLVM_ATTRIBUTE_USED;
-static void dumpNode(llvm::yaml::Node* node, unsigned indent) {
-  switch (node->getType()) {
-  default: {
-    fprintf(stderr, "%*s<node: %p, unknown>\n", indent*2, "", node);
-    break;
-  }
-
-  case llvm::yaml::Node::NK_Null: {
-    fprintf(stderr, "%*s(null)\n", indent*2, "");
-    break;
-  }
-
-  case llvm::yaml::Node::NK_Scalar: {
-    llvm::yaml::ScalarNode* scalar = llvm::cast<llvm::yaml::ScalarNode>(node);
-    SmallString<256> storage;
-    fprintf(stderr, "%*s(scalar: '%s')\n", indent*2, "",
-            scalar->getValue(storage).str().c_str());
-    break;
-  }
-
-  case llvm::yaml::Node::NK_KeyValue: {
-    assert(0 && "unexpected keyvalue node");
-    break;
-  }
-
-  case llvm::yaml::Node::NK_Mapping: {
-    llvm::yaml::MappingNode* map = llvm::cast<llvm::yaml::MappingNode>(node);
-    fprintf(stderr, "%*smap:\n", indent*2, "");
-    for (auto& it: *map) {
-      fprintf(stderr, "%*skey:\n", (indent+1)*2, "");
-      dumpNode(it.getKey(), indent+2);
-      fprintf(stderr, "%*svalue:\n", (indent+1)*2, "");
-      dumpNode(it.getValue(), indent+2);
-    }
-    break;
-  }
-
-  case llvm::yaml::Node::NK_Sequence: {
-    llvm::yaml::SequenceNode* sequence =
-      llvm::cast<llvm::yaml::SequenceNode>(node);
-    fprintf(stderr, "%*ssequence:\n", indent*2, "");
-    for (auto& it: *sequence) {
-      dumpNode(&it, indent+1);
-    }
-    break;
-  }
-
-  case llvm::yaml::Node::NK_Alias: {
-    fprintf(stderr, "%*s(alias)\n", indent*2, "");
-    break;
-  }
-  }
-}
-#endif
 
 class BuildFileImpl {
   /// The name of the main input file.
@@ -115,62 +57,76 @@ class BuildFileImpl {
 
   /// The set of all declared commands.
   BuildDescription::command_set commands;
-  
+
   /// The number of parsing errors.
   int numErrors = 0;
-    
-  // FIXME: Factor out into a parser helper class.
-  std::string stringFromScalarNode(llvm::yaml::ScalarNode* scalar) {
-    SmallString<256> storage;
-    return scalar->getValue(storage).str();
-  }
 
   /// Emit an error.
-  void error(StringRef filename, llvm::SMRange at,
-             StringRef message) {
-    BuildFileToken atToken{at.Start.getPointer(),
-        unsigned(at.End.getPointer()-at.Start.getPointer())};
+  void error(StringRef filename, llvm::SMRange at, StringRef message) {
+    BuildFileToken atToken{
+        at.Start.getPointer(),
+        unsigned(at.End.getPointer() - at.Start.getPointer())};
     delegate.error(mainFilename, atToken, message);
     ++numErrors;
   }
 
-  void error(StringRef message) {
-    error(mainFilename, {}, message);
-  }
-  
-  void error(llvm::yaml::Node* node, StringRef message) {
-    error(mainFilename, node->getSourceRange(), message);
+  void error(const Twine& message) {
+    SmallString<256> buffer;
+    error(mainFilename, {}, message.toStringRef(buffer));
   }
 
   ConfigureContext getContext(llvm::SMRange at) {
-    BuildFileToken atToken{at.Start.getPointer(),
-        unsigned(at.End.getPointer()-at.Start.getPointer())};
-    return ConfigureContext{ delegate, mainFilename, atToken };
+    BuildFileToken atToken{
+        at.Start.getPointer(),
+        unsigned(at.End.getPointer() - at.Start.getPointer())};
+    return ConfigureContext{delegate, mainFilename, atToken};
   }
 
-  ConfigureContext getContext(llvm::yaml::Node *node) {
-    return getContext(node->getSourceRange());
+  ConfigureContext getContext() {
+    return ConfigureContext{delegate, mainFilename, {}};
   }
 
   // FIXME: Factor out into a parser helper class.
-  bool nodeIsScalarString(llvm::yaml::Node* node, StringRef name) {
-    if (node->getType() != llvm::yaml::Node::NK_Scalar)
-      return false;
-
-    return stringFromScalarNode(
-        static_cast<llvm::yaml::ScalarNode*>(node)) == name;
+  StringRef stringRefFromNode(flexbuffers::Reference ref) {
+    auto string = ref.AsString();
+    return {string.c_str(), string.size()};
+  }
+  StringRef stringRefFromNode(const flatbuffers::String& string) {
+    return {string.c_str(), string.size()};
   }
 
-  Tool* getOrCreateTool(StringRef name, llvm::yaml::Node* forNode) {
+  std::vector<std::pair<StringRef, StringRef>>
+  parseAttributeMap(flexbuffers::Reference ref) {
+    const flexbuffers::Map map = ref.AsMap();
+    std::vector<std::pair<StringRef, StringRef>> attributes;
+    attributes.reserve(map.size());
+    for (size_t i = 0; i < attributes.size(); ++i) {
+      attributes.emplace_back(stringRefFromNode(map.Keys()[i]),
+                              stringRefFromNode(map.Values()[i]));
+    }
+    return attributes;
+  }
+
+  std::vector<StringRef> parseAttributes(flexbuffers::Reference ref) {
+    const flexbuffers::Vector vector = ref.AsVector();
+    std::vector<StringRef> attributes;
+    attributes.reserve(vector.size());
+    for (size_t i = 0; i < attributes.size(); ++i) {
+      attributes.emplace_back(stringRefFromNode(vector[i]));
+    }
+    return attributes;
+  }
+
+  Tool* getOrCreateTool(StringRef name) {
     // First, check the map.
     auto it = tools.find(name);
     if (it != tools.end())
       return it->second.get();
-    
+
     // Otherwise, ask the delegate to create the tool.
     auto tool = delegate.lookupTool(name);
     if (!tool) {
-      error(forNode, "invalid tool type in 'tools' map");
+      error("invalid tool type in 'tools' map");
       return nullptr;
     }
     auto result = tool.get();
@@ -184,7 +140,7 @@ class BuildFileImpl {
     auto it = nodes.find(name);
     if (it != nodes.end())
       return it->second.get();
-    
+
     // Otherwise, ask the delegate to create the node.
     auto node = delegate.lookupNode(name, isImplicit);
     assert(node);
@@ -193,291 +149,117 @@ class BuildFileImpl {
 
     return result;
   }
-  
-  bool parseRootNode(llvm::yaml::Node* node) {
-    // The root must always be a mapping.
-    if (node->getType() != llvm::yaml::Node::NK_Mapping) {
-      error(node, "unexpected top-level node");
-      return false;
-    }
-    auto mapping = static_cast<llvm::yaml::MappingNode*>(node);
 
-    // Iterate over each of the sections in the mapping.
-    auto it = mapping->begin();
-    if (!nodeIsScalarString(it->getKey(), "client")) {
-      error(it->getKey(), "expected initial mapping key 'client'");
-      return false;
-    }
-    if (it->getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-      error(it->getValue(), "unexpected 'client' value (expected map)");
-      return false;
-    }
+  template <typename T>
+  bool configureAttributes(flexbuffers::Reference ref, T& entity) {
+    const auto map = ref.AsMap();
+    for (size_t i = 0; i < map.size(); ++i) {
+      StringRef attribute = stringRefFromNode(map.Keys()[i]);
+      const auto value = map.Values()[i];
 
+      if (value.IsMap()) {
+        auto values = parseAttributeMap(value);
+        if (!entity.configureAttribute(getContext(), attribute, values)) {
+          return false;
+        }
+      } else if (value.IsVector()) {
+        auto values = parseAttributes(value);
+        if (!entity.configureAttribute(getContext(), attribute, values)) {
+          return false;
+        }
+      } else if (value.IsString()) {
+        if (!entity.configureAttribute(getContext(), attribute,
+                                       stringRefFromNode(value))) {
+          return false;
+        }
+      } else {
+        error("invalid value type: expected map, vector or string");
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool parseBuildFile(const format::BuildFile* file) {
     // Parse the client mapping.
-    if (!parseClientMapping(
-            static_cast<llvm::yaml::MappingNode*>(it->getValue()))) {
+    if (!parseClientMapping(*file->client()))
       return false;
-    }
-    ++it;
 
     // Parse the tools mapping, if present.
-    if (it != mapping->end() && nodeIsScalarString(it->getKey(), "tools")) {
-      if (it->getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-        error(it->getValue(), "unexpected 'tools' value (expected map)");
-        return false;
-      }
-
-      if (!parseToolsMapping(
-              static_cast<llvm::yaml::MappingNode*>(it->getValue()))) {
-        return false;
-      }
-      ++it;
-    }
+    if (file->tools() && !parseToolsMapping(*file->tools()))
+      return false;
 
     // Parse the targets mapping, if present.
-    if (it != mapping->end() && nodeIsScalarString(it->getKey(), "targets")) {
-      if (it->getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-        error(it->getValue(), "unexpected 'targets' value (expected map)");
-        return false;
-      }
-
-      if (!parseTargetsMapping(
-              static_cast<llvm::yaml::MappingNode*>(it->getValue()))) {
-        return false;
-      }
-      ++it;
-    }
+    if (file->targets() && !parseTargetsMapping(*file->targets()))
+      return false;
 
     // Parse the default target, if present.
-    if (it != mapping->end() && nodeIsScalarString(it->getKey(), "default")) {
-      if (it->getValue()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(it->getValue(), "unexpected 'default' target value (expected scalar)");
-        return false;
-      }
-
-      if (!parseDefaultTarget(
-              static_cast<llvm::yaml::ScalarNode*>(it->getValue()))) {
-        return false;
-      }
-      ++it;
-    }
+    if (file->default_() && !parseDefaultTarget(*file->default_()))
+      return false;
 
     // Parse the nodes mapping, if present.
-    if (it != mapping->end() && nodeIsScalarString(it->getKey(), "nodes")) {
-      if (it->getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-        error(it->getValue(), "unexpected 'nodes' value (expected map)");
-        return false;
-      }
-
-      if (!parseNodesMapping(
-              static_cast<llvm::yaml::MappingNode*>(it->getValue()))) {
-        return false;
-      }
-      ++it;
-    }
+    if (file->nodes() && !parseNodesMapping(*file->nodes()))
+      return false;
 
     // Parse the commands mapping, if present.
-    if (it != mapping->end() && nodeIsScalarString(it->getKey(), "commands")) {
-      if (it->getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-        error(it->getValue(), "unexpected 'commands' value (expected map)");
-        return false;
-      }
-
-      if (!parseCommandsMapping(
-              static_cast<llvm::yaml::MappingNode*>(it->getValue()))) {
-        return false;
-      }
-      ++it;
-    }
-
-    // There shouldn't be any trailing sections.
-    if (it != mapping->end()) {
-      error(&*it, "unexpected trailing top-level section");
+    if (file->commands() && !parseCommandsMapping(*file->commands()))
       return false;
-    }
 
     return true;
   }
 
-  bool parseClientMapping(llvm::yaml::MappingNode* map) {
+  bool parseClientMapping(const format::Client& map) {
     // Collect all of the keys.
-    std::string name;
-    uint32_t version = 0;
+    const StringRef name = stringRefFromNode(*map.name());
+    const uint32_t version = map.version();
     property_list_type properties;
-
-    for (auto& entry: *map) {
-      // All keys and values must be scalar.
-      if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(entry.getKey(), "invalid key type in 'client' map");
-        return false;
-      }
-      if (entry.getValue()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(entry.getValue(), "invalid value type in 'client' map");
-        return false;
-      }
-
-      std::string key = stringFromScalarNode(
-          static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-      std::string value = stringFromScalarNode(
-          static_cast<llvm::yaml::ScalarNode*>(entry.getValue()));
-      if (key == "name") {
-        name = value;
-      } else if (key == "version") {
-        if (StringRef(value).getAsInteger(10, version)) {
-          error(entry.getValue(), "invalid version number in 'client' map");
-        }
-      } else {
-        properties.push_back({ key, value });
-      }
+    if (map.properties()) {
+      auto attributeMap = parseAttributeMap(map.properties_flexbuffer_root());
+      properties.assign(attributeMap.begin(), attributeMap.end());
     }
 
     // Pass to the delegate.
-    if (!delegate.configureClient(getContext(map), name, version, properties)) {
-      error(map, "unable to configure client");
+    if (!delegate.configureClient(getContext(), name, version, properties)) {
+      error("unable to configure client");
       return false;
     }
 
     return true;
   }
 
-  bool parseToolsMapping(llvm::yaml::MappingNode* map) {
-    for (auto& entry: *map) {
-      // Every key must be scalar.
-      if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(entry.getKey(), "invalid key type in 'tools' map");
-        continue;
-      }
-      // Every value must be a mapping.
-      if (entry.getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-        error(entry.getValue(), "invalid value type in 'tools' map");
-        continue;
-      }
-
-      std::string name = stringFromScalarNode(
-          static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-      llvm::yaml::MappingNode* attrs = static_cast<llvm::yaml::MappingNode*>(
-          entry.getValue());
+  bool parseToolsMapping(
+      const flatbuffers::Vector<flatbuffers::Offset<format::Tool>>& map) {
+    for (const format::Tool* entry : map) {
+      StringRef name = stringRefFromNode(*entry->name());
 
       // Get the tool.
-      auto tool = getOrCreateTool(name, entry.getKey());
+      auto tool = getOrCreateTool(name);
       if (!tool) {
         return false;
       }
 
       // Configure all of the tool attributes.
-      for (auto& valueEntry: *attrs) {
-        auto key = valueEntry.getKey();
-        auto value = valueEntry.getValue();
-        
-        // All keys must be scalar.
-        if (key->getType() != llvm::yaml::Node::NK_Scalar) {
-          error(key, "invalid key type for tool in 'tools' map");
-          continue;
-        }
-
-
-        auto attribute = stringFromScalarNode(
-            static_cast<llvm::yaml::ScalarNode*>(key));
-
-        if (value->getType() == llvm::yaml::Node::NK_Mapping) {
-          std::vector<std::pair<std::string, std::string>> values;
-          for (auto& entry: *static_cast<llvm::yaml::MappingNode*>(value)) {
-            // Every key must be scalar.
-            if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-              error(entry.getKey(), ("invalid key type for '" + attribute +
-                                     "' in 'tools' map"));
-              continue;
-            }
-            // Every value must be scalar.
-            if (entry.getValue()->getType() != llvm::yaml::Node::NK_Scalar) {
-              error(entry.getKey(), ("invalid value type for '" + attribute +
-                                     "' in 'tools' map"));
-              continue;
-            }
-
-            std::string key = stringFromScalarNode(
-                static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-            std::string value = stringFromScalarNode(
-                static_cast<llvm::yaml::ScalarNode*>(entry.getValue()));
-            values.push_back(std::make_pair(key, value));
-          }
-
-          if (!tool->configureAttribute(
-                  getContext(key), attribute,
-                  std::vector<std::pair<StringRef, StringRef>>(
-                      values.begin(), values.end()))) {
-            return false;
-          }
-        } else if (value->getType() == llvm::yaml::Node::NK_Sequence) {
-          std::vector<std::string> values;
-          for (auto& node: *static_cast<llvm::yaml::SequenceNode*>(value)) {
-            if (node.getType() != llvm::yaml::Node::NK_Scalar) {
-              error(&node, "invalid value type for tool in 'tools' map");
-              continue;
-            }
-            values.push_back(
-                stringFromScalarNode(
-                    static_cast<llvm::yaml::ScalarNode*>(&node)));
-          }
-
-          if (!tool->configureAttribute(
-                  getContext(key), attribute,
-                  std::vector<StringRef>(values.begin(), values.end()))) {
-            return false;
-          }
-        } else {
-          if (value->getType() != llvm::yaml::Node::NK_Scalar) {
-            error(value, "invalid value type for tool in 'tools' map");
-            continue;
-          }
-
-          if (!tool->configureAttribute(
-                  getContext(key), attribute,
-                  stringFromScalarNode(
-                      static_cast<llvm::yaml::ScalarNode*>(value)))) {
-            return false;
-          }
-        }
+      if (entry->properties() &&
+          !configureAttributes(entry->properties_flexbuffer_root(), *tool)) {
+        return false;
       }
     }
 
     return true;
   }
-  
-  bool parseTargetsMapping(llvm::yaml::MappingNode* map) {
-    for (auto& entry: *map) {
-      // Every key must be scalar.
-      if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(entry.getKey(), "invalid key type in 'targets' map");
-        continue;
-      }
-      // Every value must be a sequence.
-      if (entry.getValue()->getType() != llvm::yaml::Node::NK_Sequence) {
-        error(entry.getValue(), "invalid value type in 'targets' map");
-        continue;
-      }
 
-      std::string name = stringFromScalarNode(
-          static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-      llvm::yaml::SequenceNode* nodes = static_cast<llvm::yaml::SequenceNode*>(
-          entry.getValue());
+  bool parseTargetsMapping(
+      const flatbuffers::Vector<flatbuffers::Offset<format::Target>>& map) {
+    for (const format::Target* entry : map) {
+      StringRef name = stringRefFromNode(*entry->name());
 
       // Create the target.
       auto target = llvm::make_unique<Target>(name);
 
       // Add all of the nodes.
-      for (auto& node: *nodes) {
-        // All items must be scalar.
-        if (node.getType() != llvm::yaml::Node::NK_Scalar) {
-          error(&node, "invalid node type in 'targets' map");
-          continue;
-        }
-
-        target->getNodes().push_back(
-            getOrCreateNode(
-                stringFromScalarNode(
-                    static_cast<llvm::yaml::ScalarNode*>(&node)),
-                /*isImplicit=*/true));
+      for (const auto& node : *entry->commands()) {
+        target->getNodes().push_back(getOrCreateNode(stringRefFromNode(*node),
+                                                     /*isImplicit=*/true));
       }
 
       // Let the delegate know we loaded a target.
@@ -490,11 +272,11 @@ class BuildFileImpl {
     return true;
   }
 
-  bool parseDefaultTarget(llvm::yaml::ScalarNode* entry) {
-    std::string target = stringFromScalarNode(entry);
+  bool parseDefaultTarget(const flatbuffers::String& entry) {
+    StringRef target = stringRefFromNode(entry);
 
     if (targets.find(target) == targets.end()) {
-      error(entry, "invalid default target, a default target should be in targets");
+      error("invalid default target, a default target should be in targets");
       return false;
     }
 
@@ -504,23 +286,10 @@ class BuildFileImpl {
     return true;
   }
 
-  bool parseNodesMapping(llvm::yaml::MappingNode* map) {
-    for (auto& entry: *map) {
-      // Every key must be scalar.
-      if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(entry.getKey(), "invalid key type in 'nodes' map");
-        continue;
-      }
-      // Every value must be a mapping.
-      if (entry.getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-        error(entry.getValue(), "invalid value type in 'nodes' map");
-        continue;
-      }
-
-      std::string name = stringFromScalarNode(
-          static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-      llvm::yaml::MappingNode* attrs = static_cast<llvm::yaml::MappingNode*>(
-          entry.getValue());
+  bool parseNodesMapping(
+      const flatbuffers::Vector<flatbuffers::Offset<format::Node>>& map) {
+    for (const format::Node* entry : map) {
+      StringRef name = stringRefFromNode(*entry->name());
 
       // Get the node.
       //
@@ -528,284 +297,68 @@ class BuildFileImpl {
       // ever make a context dependent node that can have configured properties.
       auto node = getOrCreateNode(name, /*isImplicit=*/false);
 
-      // Configure all of the tool attributes.
-      for (auto& valueEntry: *attrs) {
-        auto key = valueEntry.getKey();
-        auto value = valueEntry.getValue();
-        
-        // All keys must be scalar.
-        if (key->getType() != llvm::yaml::Node::NK_Scalar) {
-          error(key, "invalid key type for node in 'nodes' map");
-          continue;
-        }
-
-        auto attribute = stringFromScalarNode(
-            static_cast<llvm::yaml::ScalarNode*>(key));
-
-        if (value->getType() == llvm::yaml::Node::NK_Mapping) {
-          std::vector<std::pair<std::string, std::string>> values;
-          for (auto& entry: *static_cast<llvm::yaml::MappingNode*>(value)) {
-            // Every key must be scalar.
-            if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-              error(entry.getKey(), ("invalid key type for '" + attribute +
-                                     "' in 'nodes' map"));
-              continue;
-            }
-            // Every value must be scalar.
-            if (entry.getValue()->getType() != llvm::yaml::Node::NK_Scalar) {
-              error(entry.getKey(), ("invalid value type for '" + attribute +
-                                     "' in 'nodes' map"));
-              continue;
-            }
-
-            std::string key = stringFromScalarNode(
-                static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-            std::string value = stringFromScalarNode(
-                static_cast<llvm::yaml::ScalarNode*>(entry.getValue()));
-            values.push_back(std::make_pair(key, value));
-          }
-
-          if (!node->configureAttribute(
-                  getContext(key), attribute,
-                  std::vector<std::pair<StringRef, StringRef>>(
-                      values.begin(), values.end()))) {
-            return false;
-          }
-        } else if (value->getType() == llvm::yaml::Node::NK_Sequence) {
-          std::vector<std::string> values;
-          for (auto& node: *static_cast<llvm::yaml::SequenceNode*>(value)) {
-            if (node.getType() != llvm::yaml::Node::NK_Scalar) {
-              error(&node, "invalid value type for node in 'nodes' map");
-              continue;
-            }
-            values.push_back(
-                stringFromScalarNode(
-                    static_cast<llvm::yaml::ScalarNode*>(&node)));
-          }
-
-          if (!node->configureAttribute(
-                  getContext(key), attribute,
-                  std::vector<StringRef>(values.begin(), values.end()))) {
-            return false;
-          }
-        } else {
-          if (value->getType() != llvm::yaml::Node::NK_Scalar) {
-            error(value, "invalid value type for node in 'nodes' map");
-            continue;
-          }
-        
-          if (!node->configureAttribute(
-                  getContext(key), attribute,
-                  stringFromScalarNode(
-                      static_cast<llvm::yaml::ScalarNode*>(value)))) {
-            return false;
-          }
-        }
+      // Configure all of the node attributes.
+      if (entry->properties() &&
+          !configureAttributes(entry->properties_flexbuffer_root(), *node)) {
+        return false;
       }
     }
 
     return true;
   }
 
-  bool parseCommandsMapping(llvm::yaml::MappingNode* map) {
-    for (auto& entry: *map) {
-      // Every key must be scalar.
-      if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(entry.getKey(), "invalid key type in 'commands' map");
-        continue;
-      }
-      // Every value must be a mapping.
-      if (entry.getValue()->getType() != llvm::yaml::Node::NK_Mapping) {
-        error(entry.getValue(), "invalid value type in 'commands' map");
-        continue;
-      }
-
-      std::string name = stringFromScalarNode(
-          static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-      llvm::yaml::MappingNode* attrs = static_cast<llvm::yaml::MappingNode*>(
-          entry.getValue());
+  bool parseCommandsMapping(
+      const flatbuffers::Vector<flatbuffers::Offset<format::Command>>& map) {
+    for (const format::Command* entry : map) {
+      StringRef name = stringRefFromNode(*entry->name());
 
       // Check that the command is not a duplicate.
       if (commands.count(name) != 0) {
-        error(entry.getKey(), "duplicate command in 'commands' map");
+        error(Twine("duplicate command in 'commands' map: ") + name);
         continue;
       }
-      
-      // Get the initial attribute, which must be the tool name.
-      auto it = attrs->begin();
-      if (it == attrs->end()) {
-        error(entry.getKey(),
-              "missing 'tool' key for command in 'command' map");
-        continue;
-      }
-      if (!nodeIsScalarString(it->getKey(), "tool")) {
-        error(it->getKey(),
-              "expected 'tool' initial key for command in 'commands' map");
-        // Skip to the end.
-        while (it != attrs->end()) ++it;
-        continue;
-      }
-      if (it->getValue()->getType() != llvm::yaml::Node::NK_Scalar) {
-        error(it->getValue(),
-              "invalid 'tool' value type for command in 'commands' map");
-        // Skip to the end.
-        while (it != attrs->end()) ++it;
-        continue;
-      }
-      
+
       // Lookup the tool for this command.
-      auto tool = getOrCreateTool(
-          stringFromScalarNode(
-              static_cast<llvm::yaml::ScalarNode*>(
-                  it->getValue())),
-          it->getValue());
+      auto tool = getOrCreateTool(stringRefFromNode(*entry->tool()));
       if (!tool) {
         return false;
       }
-        
+
       // Create the command.
       auto command = tool->createCommand(name);
       assert(command && "tool failed to create a command");
 
-      // Parse the remaining command attributes.
-      ++it;
-      for (; it != attrs->end(); ++it) {
-        auto key = it->getKey();
-        auto value = it->getValue();
-        
-        // If this is a known key, parse it.
-        if (nodeIsScalarString(key, "inputs")) {
-          if (value->getType() != llvm::yaml::Node::NK_Sequence) {
-            error(value, "invalid value type for 'inputs' command key");
-            continue;
-          }
-
-          llvm::yaml::SequenceNode* nodeNames =
-            static_cast<llvm::yaml::SequenceNode*>(value);
-
-          std::vector<Node*> nodes;
-          for (auto& nodeName: *nodeNames) {
-            if (nodeName.getType() != llvm::yaml::Node::NK_Scalar) {
-              error(&nodeName, "invalid node type in 'inputs' command key");
-              continue;
-            }
-
-            nodes.push_back(
-                getOrCreateNode(
-                    stringFromScalarNode(
-                        static_cast<llvm::yaml::ScalarNode*>(&nodeName)),
-                    /*isImplicit=*/true));
-          }
-
-          command->configureInputs(getContext(key), nodes);
-        } else if (nodeIsScalarString(key, "outputs")) {
-          if (value->getType() != llvm::yaml::Node::NK_Sequence) {
-            error(value, "invalid value type for 'outputs' command key");
-            continue;
-          }
-
-          llvm::yaml::SequenceNode* nodeNames =
-            static_cast<llvm::yaml::SequenceNode*>(value);
-
-          std::vector<Node*> nodes;
-          for (auto& nodeName: *nodeNames) {
-            if (nodeName.getType() != llvm::yaml::Node::NK_Scalar) {
-              error(&nodeName, "invalid node type in 'outputs' command key");
-              continue;
-            }
-
-            auto node = getOrCreateNode(
-                    stringFromScalarNode(
-                        static_cast<llvm::yaml::ScalarNode*>(&nodeName)),
-                    /*isImplicit=*/true);
-            nodes.push_back(node);
-
-            // Add this command to the node producer list.
-            node->getProducers().push_back(command.get());
-          }
-
-          command->configureOutputs(getContext(key), nodes);
-        } else if (nodeIsScalarString(key, "description")) {
-          if (value->getType() != llvm::yaml::Node::NK_Scalar) {
-            error(value, "invalid value type for 'description' command key");
-            continue;
-          }
-
-          command->configureDescription(
-              getContext(key), stringFromScalarNode(
-                  static_cast<llvm::yaml::ScalarNode*>(value)));
-        } else {
-          // Otherwise, it should be an attribute assignment.
-          
-          // All keys must be scalar.
-          if (key->getType() != llvm::yaml::Node::NK_Scalar) {
-            error(key, "invalid key type in 'commands' map");
-            continue;
-          }
-
-          auto attribute = stringFromScalarNode(
-              static_cast<llvm::yaml::ScalarNode*>(key));
-
-          if (value->getType() == llvm::yaml::Node::NK_Mapping) {
-            std::vector<std::pair<std::string, std::string>> values;
-            for (auto& entry: *static_cast<llvm::yaml::MappingNode*>(value)) {
-              // Every key must be scalar.
-              if (entry.getKey()->getType() != llvm::yaml::Node::NK_Scalar) {
-                error(entry.getKey(), ("invalid key type for '" + attribute +
-                                       "' in 'commands' map"));
-                continue;
-              }
-              // Every value must be scalar.
-              if (entry.getValue()->getType() != llvm::yaml::Node::NK_Scalar) {
-                error(entry.getKey(), ("invalid value type for '" + attribute +
-                                       "' in 'commands' map"));
-                continue;
-              }
-
-              std::string key = stringFromScalarNode(
-                  static_cast<llvm::yaml::ScalarNode*>(entry.getKey()));
-              std::string value = stringFromScalarNode(
-                  static_cast<llvm::yaml::ScalarNode*>(entry.getValue()));
-              values.push_back(std::make_pair(key, value));
-            }
-
-            if (!command->configureAttribute(
-                    getContext(key), attribute,
-                    std::vector<std::pair<StringRef, StringRef>>(
-                        values.begin(), values.end()))) {
-              return false;
-            }
-          } else if (value->getType() == llvm::yaml::Node::NK_Sequence) {
-            std::vector<std::string> values;
-            for (auto& node: *static_cast<llvm::yaml::SequenceNode*>(value)) {
-              if (node.getType() != llvm::yaml::Node::NK_Scalar) {
-                error(&node, "invalid value type for command in 'commands' map");
-                continue;
-              }
-              values.push_back(
-                  stringFromScalarNode(
-                      static_cast<llvm::yaml::ScalarNode*>(&node)));
-            }
-
-            if (!command->configureAttribute(
-                    getContext(key), attribute,
-                    std::vector<StringRef>(values.begin(), values.end()))) {
-              return false;
-            }
-          } else {
-            if (value->getType() != llvm::yaml::Node::NK_Scalar) {
-              error(value, "invalid value type for command in 'commands' map");
-              continue;
-            }
-            
-            if (!command->configureAttribute(
-                    getContext(key), attribute,
-                    stringFromScalarNode(
-                        static_cast<llvm::yaml::ScalarNode*>(value)))) {
-              return false;
-            }
-          }
+      if (entry->inputs()) {
+        std::vector<Node*> nodes;
+        nodes.reserve(entry->inputs()->size());
+        for (const auto& nodeName : *entry->inputs()) {
+          nodes.push_back(getOrCreateNode(stringRefFromNode(*nodeName),
+                                          /*isImplicit=*/true));
         }
+        command->configureInputs(getContext(), nodes);
+      }
+
+      if (entry->outputs()) {
+        std::vector<Node*> nodes;
+        nodes.reserve(entry->outputs()->size());
+        for (const auto& nodeName : *entry->outputs()) {
+          auto* node = getOrCreateNode(stringRefFromNode(*nodeName),
+                                       /*isImplicit=*/true);
+          nodes.push_back(node);
+          // Add this command to the node producer list.
+          node->getProducers().push_back(command.get());
+        }
+        command->configureOutputs(getContext(), nodes);
+      }
+
+      if (entry->description()) {
+        command->configureDescription(getContext(),
+                                      stringRefFromNode(*entry->description()));
+      }
+
+      if (entry->properties() &&
+          !configureAttributes(entry->properties_flexbuffer_root(), *command)) {
+        return false;
       }
 
       // Let the delegate know we loaded a command.
@@ -819,14 +372,11 @@ class BuildFileImpl {
   }
 
 public:
-  BuildFileImpl(class BuildFile& buildFile,
-                StringRef mainFilename,
+  BuildFileImpl(class BuildFile& buildFile, StringRef mainFilename,
                 BuildFileDelegate& delegate)
-    : mainFilename(mainFilename), delegate(delegate) {}
+      : mainFilename(mainFilename), delegate(delegate) {}
 
-  BuildFileDelegate* getDelegate() {
-    return &delegate;
-  }
+  BuildFileDelegate* getDelegate() { return &delegate; }
 
   /// @name Parse Actions
   /// @{
@@ -844,29 +394,18 @@ public:
 
     delegate.setFileContentsBeingParsed(input->getBuffer());
 
-    // Create a YAML parser.
-    llvm::yaml::Stream stream(input->getMemBufferRef(), sourceMgr);
+    const auto buffer =
+        reinterpret_cast<const unsigned char*>(input->getBufferStart());
+    const auto bufferSize = input->getBufferSize();
 
-    // Read the stream, we only expect a single document.
-    auto it = stream.begin();
-    if (it == stream.end()) {
-      error("missing document in stream");
+    if (!flatbuffers::Verifier{buffer, bufferSize}
+             .VerifyBuffer<format::BuildFile>()) {
+      error("invalid build file");
       return nullptr;
     }
 
-    auto& document = *it;
-    auto root = document.getRoot();
-    if (!root) {
-      error("missing document in stream");
-      return nullptr;
-    }
-
-    if (!parseRootNode(root)) {
-      return nullptr;
-    }
-
-    if (++it != stream.end()) {
-      error(it->getRoot(), "unexpected additional document in stream");
+    const format::BuildFile* file = format::GetBuildFile(buffer);
+    if (!parseBuildFile(file)) {
       return nullptr;
     }
 
@@ -884,19 +423,14 @@ public:
   }
 };
 
-}
+} // namespace
 
 #pragma mark - BuildFile
 
-BuildFile::BuildFile(StringRef mainFilename,
-                     BuildFileDelegate& delegate)
-  : impl(new BuildFileImpl(*this, mainFilename, delegate))
-{
-}
+BuildFile::BuildFile(StringRef mainFilename, BuildFileDelegate& delegate)
+    : impl(new BuildFileImpl(*this, mainFilename, delegate)) {}
 
-BuildFile::~BuildFile() {
-  delete static_cast<BuildFileImpl*>(impl);
-}
+BuildFile::~BuildFile() { delete static_cast<BuildFileImpl*>(impl); }
 
 std::unique_ptr<BuildDescription> BuildFile::load() {
   // Create the build description.

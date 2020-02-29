@@ -12,6 +12,7 @@ add_llbuild_library(llbuildBuildSystem STATIC
   )
 
 target_link_libraries(llbuildBuildSystem PRIVATE
+  flatbuffers
   llbuildCore
   llbuildBasic
   llvmSupport)

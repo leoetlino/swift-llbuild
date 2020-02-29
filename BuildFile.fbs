@@ -1,0 +1,42 @@
+namespace llbuild.buildsystem.format;
+
+table Client {
+  name:string (required);
+  version:int = 0;
+  properties:[ubyte] (flexbuffer);
+}
+
+table Tool {
+  name:string (required);
+  properties:[ubyte] (flexbuffer);
+}
+
+table Target {
+  name:string (required);
+  commands:[string];
+}
+
+table Node {
+  name:string (required);
+  properties:[ubyte] (flexbuffer);
+}
+
+table Command {
+  name:string (required);
+  tool:string (required);
+  inputs:[string];
+  outputs:[string];
+  description:string;
+  properties:[ubyte] (flexbuffer);
+}
+
+table BuildFile {
+  client:Client (required);
+  tools:[Tool];
+  targets:[Target];
+  default:string;
+  nodes:[Node];
+  commands:[Command];
+}
+
+root_type BuildFile;

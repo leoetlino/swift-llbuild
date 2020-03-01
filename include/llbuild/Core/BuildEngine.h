@@ -254,6 +254,9 @@ public:
   /// It is an error for any client to request an additional input for a task
   /// after the last requested input has been provided by the build engine.
   virtual void inputsAvailable(TaskInterface&) = 0;
+
+  /// For internal usage by the build engine.
+  std::shared_ptr<void> buildData;
 };
 
 /// A rule represents an individual element of computation that can be performed

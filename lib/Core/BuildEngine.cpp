@@ -24,6 +24,7 @@
 #include "BuildEngineTrace.h"
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/container/flat_hash_set.h>
 #include <atomic>
 #include <algorithm>
 #include <cassert>
@@ -283,14 +284,10 @@ class BuildEngineImpl : public BuildDBDelegate {
   absl::flat_hash_map<KeyID, std::unique_ptr<RuleInfo>> ruleInfos;
 
   /// Information tracked for executing tasks.
-  //
-  // FIXME: Keeping this in a side table is very inefficient, we always have to
-  // look it up. It might make much more sense to require the Task to have a
-  // private field available for our use to store this.
   struct TaskInfo {
     TaskInfo(Task* task) : task(task) {}
 
-    std::unique_ptr<Task> task;
+    Task* task;
     /// The list of input requests that are waiting on this task, which will be
     /// fulfilled once the task is complete.
     //
@@ -329,7 +326,7 @@ class BuildEngineImpl : public BuildDBDelegate {
   /// The tracked information for executing tasks.
   ///
   /// Access to this must be protected via \see taskInfosMutex.
-  absl::flat_hash_map<Task*, std::unique_ptr<TaskInfo>> taskInfos;
+  absl::flat_hash_set<std::unique_ptr<Task>> taskInfos;
 
   /// The mutex that protects the task info map.
   std::mutex taskInfosMutex;
@@ -527,14 +524,15 @@ private:
 
     // register the task
     taskInfosMutex.lock();
-    auto result = taskInfos.emplace(task, std::make_unique<TaskInfo>(task));
+    auto result = taskInfos.emplace(std::unique_ptr<Task>(task));
     assert(result.second && "task already registered");
-    auto taskInfo = (result.first)->second.get();
+    task->buildData = std::shared_ptr<void>(new TaskInfo{task}, std::default_delete<TaskInfo>{});
+    auto taskInfo = static_cast<TaskInfo*>(task->buildData.get());
     taskInfosMutex.unlock();
     taskInfo->forRuleInfo = &ruleInfo;
 
     if (trace)
-      trace->createdTaskForRule(taskInfo->task.get(), ruleInfo.rule.get());
+      trace->createdTaskForRule(task, ruleInfo.rule.get());
 
     // Transition the rule state.
     ruleInfo.state = RuleInfo::StateKind::InProgressWaiting;
@@ -625,7 +623,7 @@ private:
       if (!isAvailable) {
         if (trace)
           trace->ruleScanningDeferredOnTask(
-            ruleInfo.rule.get(), inputRuleInfo.getPendingTaskInfo()->task.get());
+            ruleInfo.rule.get(), inputRuleInfo.getPendingTaskInfo()->task);
         assert(inputRuleInfo.isInProgress());
         inputRuleInfo.getPendingTaskInfo()->
             deferredScanRequests.push_back(request);
@@ -685,10 +683,10 @@ private:
   void decrementTaskWaitCount(TaskInfo* taskInfo) {
     --taskInfo->waitCount;
     if (trace)
-      trace->updatedTaskWaitCount(taskInfo->task.get(), taskInfo->waitCount);
+      trace->updatedTaskWaitCount(taskInfo->task, taskInfo->waitCount);
     if (taskInfo->waitCount == 0) {
       if (trace)
-        trace->unblockedTask(taskInfo->task.get());
+        trace->unblockedTask(taskInfo->task);
       readyTaskInfos.push_back(taskInfo);
     }
   }
@@ -742,7 +740,7 @@ private:
 
         if (trace) {
           if (request.taskInfo) {
-            trace->handlingTaskInputRequest(request.taskInfo->task.get(),
+            trace->handlingTaskInputRequest(request.taskInfo->task,
                                             request.inputRuleInfo->rule.get());
           } else {
             trace->handlingBuildInputRequest(request.inputRuleInfo->rule.get());
@@ -773,7 +771,7 @@ private:
         // If the rule is already available, enqueue the finalize request.
         if (isAvailable) {
           if (trace)
-            trace->readyingTaskInputRequest(request.taskInfo->task.get(),
+            trace->readyingTaskInputRequest(request.taskInfo->task,
                                             request.inputRuleInfo->rule.get());
           finishedInputRequests.push_back(request);
         } else {
@@ -781,7 +779,7 @@ private:
           assert(request.inputRuleInfo->getPendingTaskInfo());
           if (trace)
             trace->addedRulePendingTask(request.inputRuleInfo->rule.get(),
-                                        request.taskInfo->task.get());
+                                        request.taskInfo->task);
           request.inputRuleInfo->getPendingTaskInfo()->requestedBy.push_back(
             request);
         }
@@ -797,7 +795,7 @@ private:
         finishedInputRequests.pop_back();
 
         if (trace)
-          trace->completedTaskInputRequest(request.taskInfo->task.get(),
+          trace->completedTaskInputRequest(request.taskInfo->task,
                                            request.inputRuleInfo->rule.get());
 
         // Otherwise, we are processing a regular input dependency.
@@ -825,7 +823,7 @@ private:
           assert(request.inputID == kMustFollowInputID);
         } else {
           TracingEngineTaskCallback i(EngineTaskCallbackKind::ProvideValue, request.inputRuleInfo->keyID);
-          TaskInterface iface{this, request.taskInfo->task.get()};
+          TaskInterface iface{this, request.taskInfo->task};
           request.taskInfo->task->provideValue(
               iface, request.inputID, request.inputRuleInfo->result.value);
         }
@@ -847,7 +845,7 @@ private:
         assert(taskInfo == ruleInfo->getPendingTaskInfo());
 
         if (trace)
-            trace->readiedTask(taskInfo->task.get(), ruleInfo->rule.get());
+            trace->readiedTask(taskInfo->task, ruleInfo->rule.get());
 
         // Transition the rule state.
         ruleInfo->setComputing(this);
@@ -858,7 +856,7 @@ private:
         // task ever requests additional inputs.
         {
           TracingEngineTaskCallback i(EngineTaskCallbackKind::InputsAvailable, ruleInfo->keyID);
-          TaskInterface iface{this, taskInfo->task.get()};
+          TaskInterface iface{this, taskInfo->task};
           taskInfo->task->inputsAvailable(iface);
         }
 
@@ -890,7 +888,7 @@ private:
         // The task was changed if was computed in the current iteration.
         if (trace) {
           bool wasChanged = ruleInfo->result.computedAt == currentEpoch;
-          trace->finishedTask(taskInfo->task.get(), ruleInfo->rule.get(),
+          trace->finishedTask(taskInfo->task, ruleInfo->rule.get(),
                               wasChanged);
         }
 
@@ -948,7 +946,7 @@ private:
         // Push all pending input requests onto the work queue.
         if (trace) {
           for (auto& request: taskInfo->requestedBy) {
-            trace->readyingTaskInputRequest(request.taskInfo->task.get(),
+            trace->readyingTaskInputRequest(request.taskInfo->task,
                                             request.inputRuleInfo->rule.get());
           }
         }
@@ -962,7 +960,7 @@ private:
         // Delete the pending task.
         {
           std::lock_guard<std::mutex> guard(taskInfosMutex);
-          auto it = taskInfos.find(taskInfo->task.get());
+          auto it = taskInfos.find(taskInfo->task);
           assert(it != taskInfos.end());
           taskInfos.erase(it);
         }
@@ -1039,7 +1037,7 @@ private:
     std::unordered_map<Rule*, std::vector<Rule*>> successorGraph;
     std::vector<const RuleScanRecord *> activeRuleScanRecords;
     for (const auto& it: taskInfos) {
-      const TaskInfo& taskInfo = *it.second;
+      const TaskInfo& taskInfo = *static_cast<const TaskInfo*>(it->buildData.get());
       assert(taskInfo.forRuleInfo);
       std::vector<Rule*> successors;
       for (const auto& request: taskInfo.requestedBy) {
@@ -1217,7 +1215,7 @@ private:
 
         // supply the prior value to the node
         if (trace) {
-          trace->cycleSupplyPriorValue(ruleInfo.rule.get(), it->taskInfo->task.get());
+          trace->cycleSupplyPriorValue(ruleInfo.rule.get(), it->taskInfo->task);
         }
         it->forcePriorValue = true;
         finishedInputRequests.insert(finishedInputRequests.end(), *it);
@@ -1293,7 +1291,7 @@ private:
       // NOTE: Actually, we currently don't sync this write to the database, so
       // in some cases we do actually preserve this information (if the client
       // ends up cancelling, then reloading froom the database).
-      TaskInfo* taskInfo = it.second.get();
+      TaskInfo* taskInfo = static_cast<TaskInfo*>(it->buildData.get());
       RuleInfo* ruleInfo = taskInfo->forRuleInfo;
       assert(taskInfo == ruleInfo->getPendingTaskInfo());
       ruleInfo->setPendingTaskInfo(nullptr);
@@ -1382,9 +1380,7 @@ public:
   }
 
   TaskInfo* getTaskInfo(Task* task) {
-    std::lock_guard<std::mutex> guard(taskInfosMutex);
-    auto it = taskInfos.find(task);
-    return it == taskInfos.end() ? nullptr : it->second.get();
+    return static_cast<TaskInfo*>(task->buildData.get());
   }
 
   /// @name Rule Definition

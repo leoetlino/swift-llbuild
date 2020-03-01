@@ -187,6 +187,11 @@ class BuildFileImpl {
     if (!parseClientMapping(*file->client()))
       return false;
 
+    if (file->commands()) {
+      // Assume that on average each command requires 4 nodes (2 inputs and 2 outputs).
+      nodes.reserve(4 * file->commands()->size());
+    }
+
     // Parse the tools mapping, if present.
     if (file->tools() && !parseToolsMapping(*file->tools()))
       return false;
@@ -231,6 +236,7 @@ class BuildFileImpl {
 
   bool parseToolsMapping(
       const flatbuffers::Vector<flatbuffers::Offset<format::Tool>>& map) {
+    tools.reserve(map.size());
     for (const format::Tool* entry : map) {
       StringRef name = stringRefFromNode(*entry->name());
 
@@ -252,6 +258,7 @@ class BuildFileImpl {
 
   bool parseTargetsMapping(
       const flatbuffers::Vector<flatbuffers::Offset<format::Target>>& map) {
+    targets.reserve(map.size());
     for (const format::Target* entry : map) {
       StringRef name = stringRefFromNode(*entry->name());
 
@@ -259,6 +266,7 @@ class BuildFileImpl {
       auto target = llvm::make_unique<Target>(name);
 
       // Add all of the nodes.
+      target->getNodes().reserve(entry->commands()->size());
       for (const auto& node : *entry->commands()) {
         target->getNodes().push_back(getOrCreateNode(stringRefFromNode(*node),
                                                      /*isImplicit=*/true));
@@ -312,6 +320,7 @@ class BuildFileImpl {
 
   bool parseCommandsMapping(
       const flatbuffers::Vector<flatbuffers::Offset<format::Command>>& map) {
+    commands.reserve(map.size());
     for (const format::Command* entry : map) {
       StringRef name = stringRefFromNode(*entry->name());
 

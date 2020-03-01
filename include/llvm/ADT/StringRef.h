@@ -932,6 +932,10 @@ namespace llvm {
   template <typename T> struct isPodLike;
   template <> struct isPodLike<StringRef> { static const bool value = true; };
 
+  template <typename H> H AbslHashValue(H h, StringRef ref) {
+    return H::combine(std::move(h), std::string_view(ref.data(), ref.size()));
+  }
+
 } // end namespace llvm
 
 #endif // LLVM_ADT_STRINGREF_H

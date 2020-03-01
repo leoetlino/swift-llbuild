@@ -11,7 +11,7 @@ add_llbuild_library(llbuildBuildSystem STATIC
   ShellCommand.cpp
   )
 
-target_link_libraries(llbuildBuildSystem PRIVATE
+target_link_libraries(llbuildBuildSystem PUBLIC absl::flat_hash_map PRIVATE
   flatbuffers
   llbuildCore
   llbuildBasic

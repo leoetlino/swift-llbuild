@@ -22,6 +22,8 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <absl/container/flat_hash_map.h>
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -107,17 +109,10 @@ public:
 /// A complete description of a build.
 class BuildDescription {
 public:
-  // FIXME: This is an inefficent map, the string is duplicated.
-  typedef llvm::StringMap<std::unique_ptr<Node>> node_set;
-  
-  // FIXME: This is an inefficent map, the string is duplicated.
-  typedef llvm::StringMap<std::unique_ptr<Target>> target_set;
-
-  // FIXME: This is an inefficent map, the string is duplicated.
-  typedef llvm::StringMap<std::unique_ptr<Command>> command_set;
-  
-  // FIXME: This is an inefficent map, the string is duplicated.
-  typedef llvm::StringMap<std::unique_ptr<Tool>> tool_set;
+  typedef absl::flat_hash_map<StringRef, std::unique_ptr<Node>> node_set;
+  typedef absl::flat_hash_map<StringRef, std::unique_ptr<Target>> target_set;
+  typedef absl::flat_hash_map<StringRef, std::unique_ptr<Command>> command_set;
+  typedef absl::flat_hash_map<StringRef, std::unique_ptr<Tool>> tool_set;
 
 private:
   node_set nodes;

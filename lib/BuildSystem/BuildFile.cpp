@@ -130,7 +130,8 @@ class BuildFileImpl {
       return nullptr;
     }
     auto result = tool.get();
-    tools[name] = std::move(tool);
+    auto nameRef = tool->getName();
+    tools.emplace(nameRef, std::move(tool));
 
     return result;
   }
@@ -145,7 +146,8 @@ class BuildFileImpl {
     auto node = delegate.lookupNode(name, isImplicit);
     assert(node);
     auto result = node.get();
-    nodes[name] = std::move(node);
+    auto nameRef = node->getName();
+    nodes.emplace(nameRef, std::move(node));
 
     return result;
   }
@@ -266,7 +268,8 @@ class BuildFileImpl {
       delegate.loadedTarget(name, *target);
 
       // Add the target to the targets map.
-      targets[name] = std::move(target);
+      auto nameRef = target->getName();
+      targets.emplace(nameRef, std::move(target));
     }
 
     return true;
@@ -365,7 +368,8 @@ class BuildFileImpl {
       delegate.loadedCommand(name, *command);
 
       // Add the command to the commands map.
-      commands[name] = std::move(command);
+      auto nameRef = command->getName();
+      commands.emplace(nameRef, std::move(command));
     }
 
     return true;

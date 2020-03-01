@@ -23,7 +23,7 @@
 
 #include "BuildEngineTrace.h"
 
-#include <absl/container/node_hash_map.h>
+#include <absl/container/flat_hash_map.h>
 #include <atomic>
 #include <algorithm>
 #include <cassert>
@@ -280,7 +280,7 @@ class BuildEngineImpl : public BuildDBDelegate {
   // move to an alternate allocation strategy if we switch to DenseMap style
   // table. This is probably a good idea in any case, because we would benefit
   // from pool allocating RuleInfo instances.
-  absl::node_hash_map<KeyID, RuleInfo> ruleInfos;
+  absl::flat_hash_map<KeyID, std::unique_ptr<RuleInfo>> ruleInfos;
 
   /// Information tracked for executing tasks.
   //
@@ -329,7 +329,7 @@ class BuildEngineImpl : public BuildDBDelegate {
   /// The tracked information for executing tasks.
   ///
   /// Access to this must be protected via \see taskInfosMutex.
-  absl::node_hash_map<Task*, TaskInfo> taskInfos;
+  absl::flat_hash_map<Task*, std::unique_ptr<TaskInfo>> taskInfos;
 
   /// The mutex that protects the task info map.
   std::mutex taskInfosMutex;
@@ -527,9 +527,9 @@ private:
 
     // register the task
     taskInfosMutex.lock();
-    auto result = taskInfos.emplace(task, TaskInfo(task));
+    auto result = taskInfos.emplace(task, std::make_unique<TaskInfo>(task));
     assert(result.second && "task already registered");
-    auto taskInfo = &(result.first)->second;
+    auto taskInfo = (result.first)->second.get();
     taskInfosMutex.unlock();
     taskInfo->forRuleInfo = &ruleInfo;
 
@@ -1039,7 +1039,7 @@ private:
     std::unordered_map<Rule*, std::vector<Rule*>> successorGraph;
     std::vector<const RuleScanRecord *> activeRuleScanRecords;
     for (const auto& it: taskInfos) {
-      const TaskInfo& taskInfo = it.second;
+      const TaskInfo& taskInfo = *it.second;
       assert(taskInfo.forRuleInfo);
       std::vector<Rule*> successors;
       for (const auto& request: taskInfo.requestedBy) {
@@ -1059,7 +1059,7 @@ private:
     // accessible via the tasks, see https://bugs.swift.org/browse/SR-1948.
     // Unfortunately, we do not have a test case for this!
     for (const auto& it: ruleInfos) {
-      const RuleInfo& ruleInfo = it.second;
+      const RuleInfo& ruleInfo = *it.second;
       if (ruleInfo.isScanning()) {
         const auto* scanRecord = ruleInfo.getPendingScanRecord();
         activeRuleScanRecords.push_back(scanRecord);
@@ -1293,7 +1293,7 @@ private:
       // NOTE: Actually, we currently don't sync this write to the database, so
       // in some cases we do actually preserve this information (if the client
       // ends up cancelling, then reloading froom the database).
-      TaskInfo* taskInfo = &it.second;
+      TaskInfo* taskInfo = it.second.get();
       RuleInfo* ruleInfo = taskInfo->forRuleInfo;
       assert(taskInfo == ruleInfo->getPendingTaskInfo());
       ruleInfo->setPendingTaskInfo(nullptr);
@@ -1305,8 +1305,8 @@ private:
     // targeted. rdar://problem/39386591
     for (auto& it: ruleInfos) {
       // Cancel outstanding activity on rules
-      if (it.second.isScanning()) {
-        it.second.setCancelled();
+      if (it.second->isScanning()) {
+        it.second->setCancelled();
       }
     }
 
@@ -1364,7 +1364,7 @@ public:
     // Check if we have already found the rule.
     auto it = ruleInfos.find(keyID);
     if (it != ruleInfos.end())
-      return it->second;
+      return *it->second;
 
     // Otherwise, request it from the delegate and add it.
     return addRule(keyID, delegate.lookupRule(key));
@@ -1374,7 +1374,7 @@ public:
     // Check if we have already found the rule.
     auto it = ruleInfos.find(keyID);
     if (it != ruleInfos.end())
-      return it->second;
+      return *it->second;
 
     // Otherwise, we need to resolve the full key so we can request it from the
     // delegate.
@@ -1384,7 +1384,7 @@ public:
   TaskInfo* getTaskInfo(Task* task) {
     std::lock_guard<std::mutex> guard(taskInfosMutex);
     auto it = taskInfos.find(task);
-    return it == taskInfos.end() ? nullptr : &it->second;
+    return it == taskInfos.end() ? nullptr : it->second.get();
   }
 
   /// @name Rule Definition
@@ -1395,9 +1395,9 @@ public:
   }
 
   RuleInfo& addRule(KeyID keyID, std::unique_ptr<Rule>&& rule) {
-    auto result = ruleInfos.emplace(keyID, RuleInfo(keyID, std::move(rule)));
+    auto result = ruleInfos.emplace(keyID, std::make_unique<RuleInfo>(keyID, std::move(rule)));
     if (!result.second) {
-      RuleInfo& ruleInfo = result.first->second;
+      RuleInfo& ruleInfo = *result.first->second;
       delegate.error("attempt to register duplicate rule \"" + ruleInfo.rule->key.str() + "\"\n");
 
       // Set cancelled, but return something 'valid' for use until it is
@@ -1411,7 +1411,7 @@ public:
     // FIXME: Investigate retrieving this result lazily. If the DB is
     // particularly efficient, it may be best to retrieve this only when we need
     // it and never duplicate it.
-    RuleInfo& ruleInfo = result.first->second;
+    RuleInfo& ruleInfo = *result.first->second;
     if (db) {
       std::string error;
       db->lookupRuleResult(ruleInfo.keyID, *ruleInfo.rule, &ruleInfo.result, &error);
@@ -1596,7 +1596,7 @@ public:
     // Create a canonical node ordering.
     std::vector<const RuleInfo*> orderedRuleInfos;
     for (const auto& entry: ruleInfos)
-      orderedRuleInfos.push_back(&entry.second);
+      orderedRuleInfos.push_back(entry.second.get());
     std::sort(orderedRuleInfos.begin(), orderedRuleInfos.end(),
               [] (const RuleInfo* a, const RuleInfo* b) {
         return a->rule->key < b->rule->key;

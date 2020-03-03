@@ -1,0 +1,29 @@
+namespace llbuild.core.format;
+
+struct Info {
+  client_version:uint;
+  iteration:ulong;
+}
+
+table Dependencies {
+  keys:[string] (required);
+  flags:[bool] (required);
+}
+
+table RuleResult {
+  key:string (required);
+  value:[ubyte] (required);
+  signature:ulong;
+  built_at:ulong;
+  computed_at:ulong;
+  start:double;
+  end:double;
+  dependencies:Dependencies (required);
+}
+
+table BuildDB {
+  info:Info (required);
+  results:[RuleResult] (required);
+}
+
+root_type BuildDB;

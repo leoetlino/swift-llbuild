@@ -154,6 +154,10 @@ std::unique_ptr<BuildDB> createSQLiteBuildDB(StringRef path,
                                              bool recreateUnmatchedVersion,
                                              std::string* error_out);
 
+std::unique_ptr<BuildDB> createFlatBuildDB(StringRef path,
+                                           uint32_t clientSchemaVersion,
+                                           bool recreateUnmatchedVersion,
+                                           std::string* error_out);
 }
 }
 

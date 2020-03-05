@@ -629,12 +629,12 @@ class KeyMapDelegate : public BuildDBDelegate {
 public:
   llvm::StringMap<KeyID> keyTable;
 
-  const KeyID getKeyID(const KeyType& key) override {
-    auto it = keyTable.insert(std::make_pair(key.str(), KeyID::novalue())).first;
+  const KeyID getKeyID(StringRef key) override {
+    auto it = keyTable.insert(std::make_pair(key, KeyID::novalue())).first;
     return KeyID(it->getKey().data());
   }
 
-  KeyType getKeyForID(const KeyID key) override {
+  StringRef getKeyForID(const KeyID key) override {
     // Note that we don't need to lock `keyTable` here because the key entries
     // themselves don't change once created.
     return llvm::StringMapEntry<KeyID>::GetStringMapEntryFromKeyData(
@@ -696,7 +696,7 @@ static int executeDBCommand(std::vector<std::string> args) {
     for (KeyType key : args) {
       std::string error;
       Result result;
-      if (!buildDB->lookupRuleResult(keymap.getKeyID(key), key, &result, &error)) {
+      if (!buildDB->lookupRuleResult(keymap.getKeyID(key.str()), key, &result, &error)) {
         if (error.length()) {
           fprintf(stderr, "error: failed to lookup key: %s\n\n", error.c_str());
           ::exit(1);
@@ -708,7 +708,7 @@ static int executeDBCommand(std::vector<std::string> args) {
       printf("\nkey: %s\ncomputed: %" PRIu64 "\nbuilt: %" PRIu64 "\ndependencies:\n",
              key.c_str(), result.computedAt, result.builtAt);
       for (auto keyIDAndFlag : result.dependencies) {
-        printf("  %s\n", keymap.getKeyForID(keyIDAndFlag.keyID).c_str());
+        printf("  %s\n", keymap.getKeyForID(keyIDAndFlag.keyID).str().c_str());
       }
 
       // TODO - print build value

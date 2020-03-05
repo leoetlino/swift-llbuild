@@ -42,12 +42,12 @@ public:
   /// implementations may (and do) cache these values for future use.
   ///
   /// \param key [out] The key whose unique ID is being returned.
-  virtual const KeyID getKeyID(const KeyType& key) = 0;
+  virtual const KeyID getKeyID(StringRef key) = 0;
 
   /// Get the key corresponding to a key ID.
   ///
   /// This method must be thread safe, and must not fail.
-  virtual KeyType getKeyForID(const KeyID key) = 0;
+  virtual StringRef getKeyForID(const KeyID key) = 0;
 };
 
 

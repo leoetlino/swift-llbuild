@@ -41,7 +41,7 @@ class FlatBuildDB : public BuildDB {
     dbResults.reserve(db->results()->size());
     for (const format::RuleResult* result : *db->results()) {
       const auto it =
-          dbResults.emplace(delegate->getKeyID(result->key()->str()), Result{});
+          dbResults.emplace(delegate->getKeyID(result->key()->string_view()), Result{});
       auto& entry = it.first->second;
 
       entry.value.assign(result->value()->begin(), result->value()->end());
@@ -59,7 +59,7 @@ class FlatBuildDB : public BuildDB {
       }
       entry.dependencies.resize(depKeys.size());
       for (size_t i = 0; i < entry.dependencies.size(); ++i) {
-        entry.dependencies.set(i, delegate->getKeyID(depKeys[i]->str()),
+        entry.dependencies.set(i, delegate->getKeyID(depKeys[i]->string_view()),
                                depFlags[i]);
       }
     }
@@ -207,7 +207,7 @@ public:
       depFlags.reserve(result.dependencies.size());
       for (auto keyIDAndFlag : result.dependencies) {
         depKeys.emplace_back(
-            fbb.CreateString(delegate->getKeyForID(keyIDAndFlag.keyID).str()));
+            fbb.CreateString(delegate->getKeyForID(keyIDAndFlag.keyID).strv()));
         depFlags.emplace_back(keyIDAndFlag.flag);
       }
 
@@ -215,7 +215,7 @@ public:
           format::CreateDependenciesDirect(fbb, &depKeys, &depFlags);
 
       results.emplace_back(format::CreateRuleResult(
-          fbb, fbb.CreateString(delegate->getKeyForID(entry.first).str()),
+          fbb, fbb.CreateString(delegate->getKeyForID(entry.first).strv()),
           fbb.CreateVector(result.value), result.signature.value,
           result.builtAt, result.computedAt, result.start, result.end,
           dependencies));

@@ -1339,17 +1339,17 @@ public:
 
   // When changing the implementation of those, do also copy
   // the changes to CAPIBuildDB.
-  virtual const KeyID getKeyID(const KeyType& key) override {
+  virtual const KeyID getKeyID(StringRef key) override {
     std::lock_guard<std::mutex> guard(keyTableMutex);
 
     // The RHS of the mapping is actually ignored, we use the StringMap's ptr
     // identity because it allows us to efficiently map back to the key string
     // in `getRuleInfoForKey`.
-    auto it = keyTable.insert(std::make_pair(key.str(), KeyID::novalue())).first;
+    auto it = keyTable.insert(std::make_pair(key, KeyID::novalue())).first;
     return KeyID(it->getKey().data());
   }
 
-  virtual KeyType getKeyForID(const KeyID key) override {
+  virtual StringRef getKeyForID(const KeyID key) override {
     // Note that we don't need to lock `keyTable` here because the key entries
     // themselves don't change once created.
     return llvm::StringMapEntry<KeyID>::GetStringMapEntryFromKeyData(
@@ -1357,7 +1357,7 @@ public:
   }
 
   RuleInfo& getRuleInfoForKey(const KeyType& key) {
-    auto keyID = getKeyID(key);
+    auto keyID = getKeyID(key.str());
 
     // Check if we have already found the rule.
     auto it = ruleInfos.find(keyID);
@@ -1387,7 +1387,7 @@ public:
   /// @{
 
   RuleInfo& addRule(std::unique_ptr<Rule>&& rule) {
-    return addRule(getKeyID(rule->key), std::move(rule));
+    return addRule(getKeyID(rule->key.str()), std::move(rule));
   }
 
   RuleInfo& addRule(KeyID keyID, std::unique_ptr<Rule>&& rule) {
@@ -1663,7 +1663,7 @@ public:
       return;
     }
 
-    auto dependencyID = getKeyID(key);
+    auto dependencyID = getKeyID(key.str());
     taskInfo->discoveredDependencies.push_back(dependencyID, false);
   }
 

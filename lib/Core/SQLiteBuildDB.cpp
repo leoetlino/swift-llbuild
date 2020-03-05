@@ -741,7 +741,7 @@ public:
       assert(sqlite3_column_count(stmt) == 9);
       
       auto dbKeyID = DBKeyID(sqlite3_column_int64(stmt, 0));
-      auto key = KeyType((const char *)sqlite3_column_text(stmt, 1), sqlite3_column_bytes(stmt, 1));
+      auto key = StringRef((const char *)sqlite3_column_text(stmt, 1), sqlite3_column_bytes(stmt, 1));
       
       auto engineKeyID = delegate->getKeyID(key);
       engineKeyIDs[dbKeyID] = engineKeyID;
@@ -967,7 +967,7 @@ if (result != SQLITE_OK) { \
     auto text = (const char*) sqlite3_column_text(findKeyNameForKeyIDStmt, 0);
 
     // Map the key to an engine ID
-    auto engineKeyID = delegate->getKeyID(KeyType(text, size));
+    auto engineKeyID = delegate->getKeyID(StringRef(text, size));
 
     // Cache the mapping locally
     engineKeyIDs[dbKeyID] = engineKeyID;

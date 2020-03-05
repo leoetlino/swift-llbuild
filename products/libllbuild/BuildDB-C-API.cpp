@@ -74,7 +74,7 @@ private:
     keyCache = std::unordered_map<KeyID, CAPIBuildKey *>();
     keyCache.reserve(allKeys.size());
     for (auto rawKey: allKeys) {
-      const KeyID engineID = getKeyID(rawKey);
+      const KeyID engineID = getKeyID(rawKey.str());
       keyCache[engineID] = new CAPIBuildKey(BuildKey::fromData(rawKey), engineID);
     }
     keyCacheInitialized = true;
@@ -120,17 +120,17 @@ public:
     return buildKey;
   }
   
-  virtual const KeyID getKeyID(const KeyType& key) override {
+  virtual const KeyID getKeyID(StringRef key) override {
     std::lock_guard<std::mutex> guard(keyTableMutex);
     
     // The RHS of the mapping is actually ignored, we use the StringMap's ptr
     // identity because it allows us to efficiently map back to the key string
     // in `getRuleInfoForKey`.
-    auto it = keyTable.insert(std::make_pair(key.str(), KeyID::novalue())).first;
+    auto it = keyTable.insert(std::make_pair(key, KeyID::novalue())).first;
     return KeyID(it->getKey().data());
   }
   
-  virtual KeyType getKeyForID(const KeyID key) override {
+  virtual StringRef getKeyForID(const KeyID key) override {
     // Note that we don't need to lock `keyTable` here because the key entries
     // themselves don't change once created.
     return llvm::StringMapEntry<KeyID>::GetStringMapEntryFromKeyData(
@@ -138,7 +138,7 @@ public:
   }
   
   bool lookupRuleResult(const KeyType &key, Result *result_out, std::string *error_out) {
-    return _db.get()->lookupRuleResult(this->getKeyID(key), key, result_out, error_out);
+    return _db.get()->lookupRuleResult(this->getKeyID(key.str()), key, result_out, error_out);
   }
   
   bool buildStarted(std::string *error_out) {
@@ -332,7 +332,7 @@ bool llb_database_get_keys(llb_database_t *database, llb_database_fetch_result_t
   std::vector<KeyID> buildKeys;
   buildKeys.reserve(keys.size());
   for (auto rawKey: keys) {
-    buildKeys.emplace_back(db->getKeyID(rawKey));
+    buildKeys.emplace_back(db->getKeyID(rawKey.str()));
   }
   
   auto resultKeys = new CAPIBuildDBFetchResult(buildKeys, *db);
@@ -364,7 +364,7 @@ bool llb_database_get_keys_and_results(llb_database_t *database, llb_database_fe
   databaseResults.reserve(results.size());
   
   for (size_t index = 0; index < keys.size(); index++) {
-    keyIDs.emplace_back(db->getKeyID(keys[index]));
+    keyIDs.emplace_back(db->getKeyID(keys[index].str()));
     databaseResults.emplace_back(mapResult(*db, results[index]));
   }
   

@@ -33,6 +33,7 @@ class FlatBuildDB : public BuildDB {
       dbResults;
   uint32_t dbVersion;
   uint64_t dbIteration;
+  bool dbDirty = false;
 
   /// The delegate pointer
   BuildDBDelegate* delegate = nullptr;
@@ -103,6 +104,36 @@ class FlatBuildDB : public BuildDB {
     }
 
     return true;
+  }
+
+  bool hasResultChanged(const Result& result,
+                        const format::RuleResult* oldResult) const {
+    const auto depsChanged = [&] {
+      const size_t n = result.dependencies.size();
+      const auto& oldKeys = *oldResult->dependencies()->keys();
+      const auto& oldFlags = *oldResult->dependencies()->flags();
+
+      if (n != oldFlags.size())
+        return true;
+
+      for (size_t i = 0; i < n; ++i) {
+        if (result.dependencies[i].flag != oldFlags[i])
+          return true;
+        // getKeyForID is less expensive than the reverse operation, which
+        // possibly requires inserting a new entry into a StringMap.
+        if (delegate->getKeyForID(result.dependencies[i].keyID) !=
+            oldKeys[i]->string_view()) {
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+    return !std::equal(result.value.begin(), result.value.end(),
+                       oldResult->value()->begin(),
+                       oldResult->value()->end()) ||
+           result.signature.value != oldResult->signature() || depsChanged();
   }
 
 public:
@@ -193,7 +224,21 @@ public:
       return false;
     }
 
-    dbResults.insert_or_assign(rule.key.str(), ruleResult);
+    auto it = dbResults.find(rule.key.str());
+    if (it == dbResults.end()) {
+      dbDirty = true;
+      dbResults.emplace(rule.key.str(), ruleResult);
+    } else {
+      // No need to update dbDirty if the variant holds a Result,
+      // since that means a new result was added and dbDirty is already true.
+      if (auto old = std::get_if<const format::RuleResult*>(&it->second)) {
+        if (hasResultChanged(ruleResult, *old)) {
+          dbDirty = true;
+        }
+      }
+      dbResults.insert_or_assign(rule.key.str(), ruleResult);
+    }
+
     return true;
   }
 
@@ -201,6 +246,10 @@ public:
 
   void buildComplete() override {
     std::lock_guard<std::mutex> guard(dbMutex);
+
+    if (!dbDirty) {
+      return;
+    }
 
     flatbuffers::FlatBufferBuilder fbb(100'000'000);
 

@@ -12,6 +12,7 @@
 #include <cassert>
 #include <fstream>
 #include <mutex>
+#include <variant>
 
 namespace llbuild::core {
 
@@ -25,9 +26,11 @@ class FlatBuildDB : public BuildDB {
   /// error instead.
   bool recreateOnUnmatchedVersion;
 
-  bool dbLoaded = false;
   std::mutex dbMutex;
-  absl::flat_hash_map<KeyID, Result> dbResults;
+  std::unique_ptr<llvm::MemoryBuffer> dbData;
+  absl::flat_hash_map<std::string_view,
+                      std::variant<const format::RuleResult*, Result>>
+      dbResults;
   uint32_t dbVersion;
   uint64_t dbIteration;
 
@@ -40,41 +43,22 @@ class FlatBuildDB : public BuildDB {
 
     dbResults.reserve(db->results()->size());
     for (const format::RuleResult* result : *db->results()) {
-      const auto it =
-          dbResults.emplace(delegate->getKeyID(result->key()->string_view()), Result{});
-      auto& entry = it.first->second;
-
-      entry.value.assign(result->value()->begin(), result->value()->end());
-      entry.signature = basic::CommandSignature(result->signature());
-      entry.computedAt = result->computed_at();
-      entry.builtAt = result->built_at();
-      entry.start = result->start();
-      entry.end = result->end();
-
-      const auto& depKeys = *result->dependencies()->keys();
-      const auto& depFlags = *result->dependencies()->flags();
-      if (depKeys.size() != depFlags.size()) {
-        *error_out = "invalid dependency data";
-        return false;
-      }
-      entry.dependencies.resize(depKeys.size());
-      for (size_t i = 0; i < entry.dependencies.size(); ++i) {
-        entry.dependencies.set(i, delegate->getKeyID(depKeys[i]->string_view()),
-                               depFlags[i]);
-      }
+      dbResults.emplace(result->key()->string_view(), result);
     }
 
     return true;
   }
 
   bool doOpen(std::string* error_out) {
-    auto data = llvm::MemoryBuffer::getFile(path);
-    if (!data) {
-      return true;
+    {
+      auto data = llvm::MemoryBuffer::getFile(path);
+      if (!data) {
+        return true;
+      }
+      dbData = std::move(data.get());
     }
 
-    auto* dataPtr =
-        reinterpret_cast<const uint8_t*>(data.get()->getBufferStart());
+    auto* dataPtr = reinterpret_cast<const uint8_t*>(dbData->getBufferStart());
 #ifndef NDEBUG
     flatbuffers::Verifier verifier{dataPtr, data.get()->getBufferSize()};
     if (!format::VerifyBuildDBBuffer(verifier)) {
@@ -86,7 +70,7 @@ class FlatBuildDB : public BuildDB {
   }
 
   bool open(std::string* error_out) {
-    if (dbLoaded)
+    if (dbData)
       return true;
 
     if (!doOpen(error_out))
@@ -112,13 +96,12 @@ class FlatBuildDB : public BuildDB {
           return false;
         }
       } else {
-        dbLoaded = false;
+        dbData = nullptr;
         if (!doOpen(error_out))
           return false;
       }
     }
 
-    dbLoaded = true;
     return true;
   }
 
@@ -169,11 +152,36 @@ public:
       return false;
     }
 
-    const auto it = dbResults.find(keyID);
+    const auto it = dbResults.find(key.str());
     if (it == dbResults.end())
       return false;
 
-    *result_out = it->second;
+    if (auto result = std::get_if<Result>(&it->second)) {
+      *result_out = *result;
+    } else if (auto ptr = std::get_if<const format::RuleResult*>(&it->second)) {
+      const format::RuleResult* result = *ptr;
+
+      result_out->value.reserve(result->value()->size());
+      result_out->value.assign(result->value()->begin(),
+                               result->value()->end());
+      result_out->signature = basic::CommandSignature(result->signature());
+      result_out->computedAt = result->computed_at();
+      result_out->builtAt = result->built_at();
+      result_out->start = result->start();
+      result_out->end = result->end();
+
+      const auto& depKeys = *result->dependencies()->keys();
+      const auto& depFlags = *result->dependencies()->flags();
+      if (depKeys.size() != depFlags.size()) {
+        *error_out = "invalid dependency data";
+        return false;
+      }
+      result_out->dependencies.resize(depKeys.size());
+      for (size_t i = 0; i < depKeys.size(); ++i) {
+        result_out->dependencies.set(
+            i, delegate->getKeyID(depKeys[i]->string_view()), depFlags[i]);
+      }
+    }
     return true;
   }
 
@@ -185,7 +193,7 @@ public:
       return false;
     }
 
-    dbResults.insert_or_assign(keyID, ruleResult);
+    dbResults.insert_or_assign(rule.key.str(), ruleResult);
     return true;
   }
 
@@ -199,26 +207,45 @@ public:
     std::vector<flatbuffers::Offset<format::RuleResult>> results;
     results.reserve(dbResults.size());
     for (const auto& entry : dbResults) {
-      const Result& result = entry.second;
+      if (std::holds_alternative<Result>(entry.second)) {
+        const auto& result = std::get<Result>(entry.second);
 
-      std::vector<flatbuffers::Offset<flatbuffers::String>> depKeys;
-      std::vector<uint8_t> depFlags;
-      depKeys.reserve(result.dependencies.size());
-      depFlags.reserve(result.dependencies.size());
-      for (auto keyIDAndFlag : result.dependencies) {
-        depKeys.emplace_back(
-            fbb.CreateString(delegate->getKeyForID(keyIDAndFlag.keyID).strv()));
-        depFlags.emplace_back(keyIDAndFlag.flag);
+        std::vector<flatbuffers::Offset<flatbuffers::String>> depKeys;
+        std::vector<uint8_t> depFlags;
+        depKeys.reserve(result.dependencies.size());
+        depFlags.reserve(result.dependencies.size());
+        for (auto keyIDAndFlag : result.dependencies) {
+          depKeys.emplace_back(fbb.CreateString(
+              delegate->getKeyForID(keyIDAndFlag.keyID).strv()));
+          depFlags.emplace_back(keyIDAndFlag.flag);
+        }
+
+        const auto dependencies =
+            format::CreateDependenciesDirect(fbb, &depKeys, &depFlags);
+
+        results.emplace_back(format::CreateRuleResult(
+            fbb, fbb.CreateString(entry.first), fbb.CreateVector(result.value),
+            result.signature.value, result.builtAt, result.computedAt,
+            result.start, result.end, dependencies));
+      } else {
+        const auto* result = std::get<const format::RuleResult*>(entry.second);
+
+        std::vector<flatbuffers::Offset<flatbuffers::String>> depKeys;
+        depKeys.reserve(result->dependencies()->keys()->size());
+        for (const auto& key : *result->dependencies()->keys())
+          depKeys.emplace_back(fbb.CreateString(key));
+
+        const auto dependencies = format::CreateDependencies(
+            fbb, fbb.CreateVector(depKeys),
+            fbb.CreateVector(result->dependencies()->flags()->data(),
+                             result->dependencies()->flags()->size()));
+
+        results.emplace_back(format::CreateRuleResult(
+            fbb, fbb.CreateString(result->key()),
+            fbb.CreateVector(result->value()->data(), result->value()->size()),
+            result->signature(), result->built_at(), result->computed_at(),
+            result->start(), result->end(), dependencies));
       }
-
-      const auto dependencies =
-          format::CreateDependenciesDirect(fbb, &depKeys, &depFlags);
-
-      results.emplace_back(format::CreateRuleResult(
-          fbb, fbb.CreateString(delegate->getKeyForID(entry.first).strv()),
-          fbb.CreateVector(result.value), result.signature.value,
-          result.builtAt, result.computedAt, result.start, result.end,
-          dependencies));
     }
 
     const format::Info info{clientSchemaVersion, dbIteration};

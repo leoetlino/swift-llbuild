@@ -95,6 +95,11 @@ namespace llvm {
     /*implicit*/ StringRef(const std::string &Str)
       : Data(Str.data()), Length(Str.length()) {}
 
+    /// Construct a string ref from an std::string_view.
+    LLVM_ATTRIBUTE_ALWAYS_INLINE
+    /*implicit*/ StringRef(std::string_view Str)
+      : Data(Str.data()), Length(Str.length()) {}
+
     static StringRef withNullAsEmpty(const char *data) {
       return StringRef(data ? data : "");
     }
@@ -225,9 +230,13 @@ namespace llvm {
 
     /// str - Get the contents as an std::string.
     LLVM_NODISCARD
-    std::string str() const {
-      if (!Data) return std::string();
-      return std::string(Data, Length);
+    std::string_view strv() const {
+      if (!Data) return std::string_view();
+      return std::string_view(Data, Length);
+    }
+
+    LLVM_NODISCARD std::string str() const {
+      return std::string(strv());
     }
 
     /// @}

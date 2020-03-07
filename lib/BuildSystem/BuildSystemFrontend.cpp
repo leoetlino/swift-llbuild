@@ -399,7 +399,8 @@ unsigned BuildSystemFrontendDelegate::getNumFailedCommands() {
 
 void
 BuildSystemFrontendDelegate::error(const Twine& message) {
-  error("", {}, message.str());
+  llvm::SMDiagnostic diag{"", llvm::SourceMgr::DK_Error, message.str()};
+  getSourceMgr().PrintMessage(llvm::errs(), diag);
 }
 
 void
@@ -544,18 +545,18 @@ void BuildSystemFrontendDelegate::commandStarted(Command* command) {
 }
 
 void BuildSystemFrontendDelegate::commandHadError(Command* command, StringRef data) {
-  fwrite(data.data(), data.size(), 1, stderr);
-  fflush(stderr);
+  llvm::SMDiagnostic diag{command->getName(), llvm::SourceMgr::DK_Error, data};
+  getSourceMgr().PrintMessage(llvm::errs(), diag);
 }
 
 void BuildSystemFrontendDelegate::commandHadNote(Command* command, StringRef data) {
-  fwrite(data.data(), data.size(), 1, stdout);
-  fflush(stdout);
+  llvm::SMDiagnostic diag{command->getName(), llvm::SourceMgr::DK_Note, data};
+  getSourceMgr().PrintMessage(llvm::errs(), diag);
 }
 
 void BuildSystemFrontendDelegate::commandHadWarning(Command* command, StringRef data) {
-  fwrite(data.data(), data.size(), 1, stdout);
-  fflush(stdout);
+  llvm::SMDiagnostic diag{command->getName(), llvm::SourceMgr::DK_Warning, data};
+  getSourceMgr().PrintMessage(llvm::errs(), diag);
 }
 
 void BuildSystemFrontendDelegate::commandFinished(Command*, ProcessStatus) {
@@ -578,8 +579,8 @@ void BuildSystemFrontendDelegate::commandCannotBuildOutputDueToMissingInputs(
   }
 
   messageStream.flush();
-  fwrite(message.data(), message.size(), 1, stderr);
-  fflush(stderr);
+  llvm::SMDiagnostic diag{command->getName(), llvm::SourceMgr::DK_Error, message};
+  getSourceMgr().PrintMessage(llvm::errs(), diag);
 }
 
 void BuildSystemFrontendDelegate::cannotBuildNodeDueToMultipleProducers(
@@ -599,8 +600,8 @@ void BuildSystemFrontendDelegate::cannotBuildNodeDueToMultipleProducers(
   }
 
   messageStream.flush();
-  fwrite(message.data(), message.size(), 1, stderr);
-  fflush(stderr);
+  llvm::SMDiagnostic diag{output->getName(), llvm::SourceMgr::DK_Error, message};
+  getSourceMgr().PrintMessage(llvm::errs(), diag);
 }
 
 void BuildSystemFrontendDelegate::commandJobStarted(Command*) {

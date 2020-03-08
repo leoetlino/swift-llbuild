@@ -100,7 +100,7 @@ class BuildFileImpl {
     const flexbuffers::Map map = ref.AsMap();
     std::vector<std::pair<StringRef, StringRef>> attributes;
     attributes.reserve(map.size());
-    for (size_t i = 0; i < attributes.size(); ++i) {
+    for (size_t i = 0; i < map.size(); ++i) {
       attributes.emplace_back(stringRefFromNode(map.Keys()[i]),
                               stringRefFromNode(map.Values()[i]));
     }
@@ -111,7 +111,7 @@ class BuildFileImpl {
     const flexbuffers::Vector vector = ref.AsVector();
     std::vector<StringRef> attributes;
     attributes.reserve(vector.size());
-    for (size_t i = 0; i < attributes.size(); ++i) {
+    for (size_t i = 0; i < vector.size(); ++i) {
       attributes.emplace_back(stringRefFromNode(vector[i]));
     }
     return attributes;
